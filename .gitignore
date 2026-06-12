@@ -1,0 +1,42 @@
+# Build output
+build/
+out/
+*.geode
+
+# ffmpeg — download separately (see README)
+resources/ffmpeg.exe
+
+# Visual Studio / CMake
+.vs/
+CMakeSettings.json
+CMakeCache.txt
+cmake_install.cmake
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+*.suo
+*.user
+
+# MSVC build artifacts
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.log
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Temp / scratch
+*.rar
+*.zip
+*.txt.bak
+nul
+фыв/
+_fra/
+_look/

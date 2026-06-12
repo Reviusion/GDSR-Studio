@@ -1,0 +1,37 @@
+{
+    "geode": "5.6.1",
+    "gd": {
+        "win": "2.2081"
+    },
+    "id": "reviusion.gdsr-studio",
+    "name": "GDSR Studio",
+    "developer": "Reviusion",
+    "version": "v0.1.0",
+    "description": "A full OBS-style recording studio inside Geometry Dash. Hit F8 to record — live preview, audio mixer, hardware encoding. No alt-tabbing required.",
+    "tags": ["utility", "developer", "interface"],
+    "settings": {
+        "show-on-startup": {
+            "type": "bool",
+            "default": false,
+            "name": "Show on startup",
+            "description": "Open the GDSR Studio window automatically when the game launches."
+        },
+        "toggle-key-hint": {
+            "type": "title",
+            "name": "Hotkeys"
+        },
+        "_hotkey-note": {
+            "type": "bool",
+            "default": true,
+            "name": "F8 toggles the studio window",
+            "description": "Press F8 in-game to show or hide the GDSR Studio interface. (Informational)"
+        }
+    },
+    "resources": {
+        "files": [
+            "resources/ffmpeg.exe"
+        ]
+    },
+    "dependencies": {},
+    "incompatibilities": {}
+}
