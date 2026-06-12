@@ -16,12 +16,18 @@ GDSR Studio isn't just another screenshot mod. It's a complete recorder with a l
 
 ---
 
+## Recommended: 720p @ 60 fps
+
+That's the baseline for a clean, YouTube-ready recording. Runs fine on anything with a dedicated GPU from the last decade. If it chugs, drop down to the **Low** or **Balanced** preset.
+
+---
+
 ## Performance presets
 
 - **Potato** — 480p@24fps, maximum compression. For actual toasters
 - **Low** — 720p@30fps. Playable on office laptops
-- **Balanced** — 720p@24fps. The sweet spot for most setups
-- **Quality** — 720p@24fps, low CRF. When picture quality matters
+- **Balanced** — 720p@60fps. Rock-solid daily driver
+- **Quality** — 720p@60fps, low CRF. When picture quality matters more than file size
 
 ---
 

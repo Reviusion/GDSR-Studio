@@ -110,14 +110,14 @@ inline void applyPerfProfile(StudioState& st, PerfProfile p) {
             st.previewFps = 15; st.recFps = 30; st.quality = 35;
             st.outWidth = 1280; st.outHeight = 720; st.bitrateKbps = 3000;
             st.previewMaxDim = 640; break;
-        // Balanced  — 720p@24fps, stable glReadPixels recording with good quality.
+        // Balanced  — 720p@60fps, the daily-driver baseline for YouTube-ready clips.
         case PerfProfile::Balanced:
-            st.previewFps = 30; st.recFps = 24; st.quality = 23;
+            st.previewFps = 30; st.recFps = 60; st.quality = 23;
             st.outWidth = 1280; st.outHeight = 720; st.bitrateKbps = 12000;
             st.previewMaxDim = 960; break;
-        // Quality  — 720p@24fps, visually cleaner output while keeping gameplay smooth.
+        // Quality  — 720p@60fps, lower CRF for cleaner output when file size doesn't matter.
         case PerfProfile::Quality:
-            st.previewFps = 30; st.recFps = 24; st.quality = 18;
+            st.previewFps = 30; st.recFps = 60; st.quality = 18;
             st.outWidth = 1280; st.outHeight = 720; st.bitrateKbps = 20000;
             st.previewMaxDim = 1280; break;
         case PerfProfile::Custom:

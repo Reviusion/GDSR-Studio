@@ -16,9 +16,10 @@ No OBS. No stream keys. No Game Capture wizard nonsense. Just hit F8 and you've 
 - **Audio mixer** — separate channels for desktop and mic, with gain, mute, and peak meters
 - **Performance presets** — Potato / Low / Balanced / Quality
 - **Zero render-thread overhead** — frame capture runs on a dedicated thread via D3D11 staging textures, so the game doesn't stutter
-- **Borrow FPS** — when the encoder falls behind, the game itself slows down just enough so every recorded frame is a real frame (no dropped/duplicated frames). Essential on weak hardware like a GT 630M.
+- **Borrow FPS** — when the encoder falls behind, the game itself slows down just enough so every recorded frame is a real frame (no dropped/duplicated frames). Essential on weaker machines.
 - **15 languages** — English, Русский, Español, Português, Deutsch, 简体中文, Français, 日本語, 한국어, Italiano, Polski, Türkçe, Tiếng Việt, Bahasa Indonesia, Українська
 - **Dark/light theme**, dockable panels, F11 for fullscreen
+- **Recommended: 720p at 60 fps** — the sweet spot for YouTube-ready recordings without hammering your GPU
 
 ---
 
@@ -61,9 +62,11 @@ Game renders a frame
       → submitFrame()   — encoder thread: pipe to ffmpeg
 ```
 
-**"Borrow FPS from game"** (on by default) — when the pipeline can't keep up, GD's render thread blocks briefly so every recorded frame stays real. On a GT 630M + i5-3230M this is the difference between smooth recording and a slideshow.
+**"Borrow FPS from game"** (on by default) — when the pipeline can't keep up, GD's render thread blocks briefly so every recorded frame stays real. On low-end hardware this is the difference between smooth recording and a slideshow.
 
-**Recommended settings for weak hardware:**
+**Recommended baseline: 720p @ 60 fps** — hits the YouTube sweet spot, looks clean, and runs fine on anything with a dedicated GPU from the last decade. If your machine struggles, try the presets below.
+
+**If you're on a toaster:**
 
 | Setting | Value |
 |---------|-------|
@@ -71,6 +74,7 @@ Game renders a frame
 | Resolution | 1280×720 |
 | Encoder | x264 (CPU) |
 | Quality | 28–35 |
+| Preset | Low or Potato |
 
 ---
 
@@ -85,8 +89,8 @@ Game renders a frame
 
 **Clone with submodules:**
 ```bat
-git clone --recurse-submodules https://github.com/Reviusion/gdsr-studio.git
-cd gdsr-studio
+git clone --recurse-submodules https://github.com/Reviusion/GDSR-Studio.git
+cd GDSR-Studio
 ```
 
 **Build:**
