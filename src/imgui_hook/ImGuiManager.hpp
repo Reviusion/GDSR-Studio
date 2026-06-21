@@ -51,7 +51,7 @@ private:
     void saveSettings();
     void unhookWindowProc();
     bool captureBackbuffer(bool needPixels);
-    void uploadPreviewTexture();  // upload m_pixbuf to m_gameTex; m_pixbuf must be non-empty
+    void uploadPreviewTexture();  // upload m_pixbuf (decimated) to m_gameTex; m_pixbuf must be non-empty
     void captureSize(int vpW, int vpH, int& outW, int& outH, bool forceRecord = false) const;
 
     bool    m_initialized = false;
@@ -85,6 +85,7 @@ private:
     std::vector<unsigned char> m_previewScratch;
 
     double m_lastCaptureMs = 0.0;
+    double m_lastPreviewMs = 0.0;   // throttles the during-recording preview upload
     double m_lastRecordCaptureMs = 0.0;
     bool   m_wasRecording = false;
     int    m_lastLogW      = 0;

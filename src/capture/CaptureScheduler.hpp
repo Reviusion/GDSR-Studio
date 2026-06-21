@@ -120,7 +120,7 @@ private:
 
     int m_pending = 0;                  // copies issued but not yet acquired
     std::deque<RawFrame> m_ready;       // mapped frames awaiting pollFrame
-    size_t m_maxReady = 6;   // deeper ready buffer for high-fps recording
+    size_t m_maxReady = 5;
 
     RawFrame m_lastGood;                // for timeline-preserving repeats
     bool     m_haveLast = false;

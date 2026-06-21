@@ -10,6 +10,7 @@
 #include <d3d11.h>
 #include <d3d11_4.h>   // ID3D11Multithread
 #include <dxgi1_2.h>
+#include <GL/gl.h>     // glGetString / GL_VERSION (which renderer GD frames go through)
 #include <algorithm>
 #include <cstring>
 #include <Geode/loader/Log.hpp>
@@ -52,6 +53,23 @@ bool AngleD3D11Backend::isBGRA() const { return m_isBGRA; }
 
 bool AngleD3D11Backend::init() {
     if (m_device) return true;
+
+    // GATE: only take the ANGLE/D3D11 path if GD's CURRENT GL context is actually
+    // ANGLE (GLES-over-D3D11). libEGL.dll can be loaded in-process by another mod /
+    // overlay while the game still renders through NATIVE OpenGL (nvoglv64). In that
+    // case eglGetCurrentDisplay() succeeds and we'd grab an ANGLE D3D11 device that
+    // is NOT the game's real output surface -> wrong/garbage capture and the
+    // "nvoglv64 crash logged as GDR Angle" confusion. The GL_VERSION string is the
+    // ground truth for which renderer the game frames go through.
+    {
+        const char* glv = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+        bool isAngle = glv && (std::strstr(glv, "ANGLE") || std::strstr(glv, "OpenGL ES"));
+        if (!isAngle) {
+            geode::log::info("GDR Angle: native GL context ({}), using GL readback",
+                             glv ? glv : "unknown");
+            return false;   // -> CaptureScheduler falls back to OpenGLBlockingBackend
+        }
+    }
 
     for (const char** d = kEglDllNames; *d; ++d) { m_eglModule = LoadLibraryA(*d); if (m_eglModule) break; }
     if (!m_eglModule) { geode::log::warn("GDR Angle: libEGL.dll not found"); return false; }
@@ -127,13 +145,22 @@ ID3D11Texture2D* AngleD3D11Backend::acquireBackbuffer(int& w, int& h, unsigned i
                 D3D11_TEXTURE2D_DESC x = {}; t->GetDesc(&x);
                 w = (int)x.Width; h = (int)x.Height; srcFmt = x.Format;
                 if (x.SampleDesc.Count > 1) {
-                    D3D11_TEXTURE2D_DESC rd = x;
-                    rd.SampleDesc.Count = 1; rd.SampleDesc.Quality = 0;
-                    rd.Usage = D3D11_USAGE_DEFAULT; rd.CPUAccessFlags = 0; rd.BindFlags = 0;
-                    ID3D11Texture2D* res = nullptr;
-                    if (SUCCEEDED(m_device->CreateTexture2D(&rd, nullptr, &res)) && res) {
-                        m_context->ResolveSubresource(res, 0, t, 0, srcFmt);
-                        t->Release(); t = res;
+                    // Reuse a cached single-sample resolve target instead of
+                    // allocating one every frame (per-frame CreateTexture2D was a
+                    // source of capture-swap jitter). Recreate only on dim/fmt change.
+                    if (!m_resolveTex || m_resolveW != (int)x.Width ||
+                        m_resolveH != (int)x.Height || m_resolveFmt != (unsigned)srcFmt) {
+                        if (m_resolveTex) { m_resolveTex->Release(); m_resolveTex = nullptr; }
+                        D3D11_TEXTURE2D_DESC rd = x;
+                        rd.SampleDesc.Count = 1; rd.SampleDesc.Quality = 0;
+                        rd.Usage = D3D11_USAGE_DEFAULT; rd.CPUAccessFlags = 0; rd.BindFlags = 0;
+                        if (SUCCEEDED(m_device->CreateTexture2D(&rd, nullptr, &m_resolveTex)) && m_resolveTex) {
+                            m_resolveW = (int)x.Width; m_resolveH = (int)x.Height; m_resolveFmt = (unsigned)srcFmt;
+                        } else { m_resolveTex = nullptr; }
+                    }
+                    if (m_resolveTex) {
+                        m_context->ResolveSubresource(m_resolveTex, 0, t, 0, srcFmt);
+                        t->Release(); t = m_resolveTex; t->AddRef();  // caller Releases
                     } else { t->Release(); t = nullptr; }
                 }
                 result = t;
@@ -193,6 +220,21 @@ void AngleD3D11Backend::releaseRing() {
 
 int AngleD3D11Backend::issueCopy(int /*reqW*/, int /*reqH*/) {
     if (!m_device || !m_context) return -1;
+
+    // Cheap early-out when the ring is already full: avoid taking the ANGLE
+    // immediate-context lock + acquireBackbuffer just to discover there's no free
+    // slot. The borrow-wait loop re-calls this every couple of ms, and grabbing
+    // the lock there contends with the worker's Map — slowing the very thread that
+    // frees slots. (Does NOT change borrow-fps; only makes the "full" case cheap.)
+    {
+        std::lock_guard<std::mutex> rg(m_ringMtx);
+        if (m_slots[0].tex) {
+            bool anyFree = false;
+            for (auto& s : m_slots) if (s.state == SlotState::Free) { anyFree = true; break; }
+            if (!anyFree) return -1;
+        }
+    }
+
     MtGuard lock(m_mt);
 
     int sw = 0, sh = 0; unsigned int fmt = 0;
@@ -299,6 +341,7 @@ void AngleD3D11Backend::reset() {
 
 void AngleD3D11Backend::shutdown() {
     releaseRing();
+    if (m_resolveTex) { m_resolveTex->Release(); m_resolveTex = nullptr; m_resolveW = m_resolveH = 0; m_resolveFmt = 0; }
     if (m_mt)        { m_mt->Release();        m_mt = nullptr; }
     if (m_swapChain) { m_swapChain->Release(); m_swapChain = nullptr; }
     if (m_context)   { m_context->Release();   m_context = nullptr; }

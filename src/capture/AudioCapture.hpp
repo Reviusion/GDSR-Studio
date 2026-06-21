@@ -47,15 +47,15 @@ public:
     // loopback sources), render=false -> capture devices (microphones).
     static std::vector<AudioDeviceInfo> listDevices(bool render);
 
-    // Begin capture, mixing to `wavPath`. If `micWavPath` is non-empty a SECOND
-    // microphone-only WAV is written in parallel (dual-track recording): track 1
-    // is the full mix, track 2 the isolated mic. Returns false if no device opened.
-    bool start(const std::wstring& wavPath, const std::wstring& micWavPath = std::wstring(),
-               int sampleRate = 48000, int channels = 2);
+    // Begin capture. `wavBase` is a path STEM; three WAVs are written:
+    //   <base>.mix.wav (desktop+mic), <base>.game.wav (desktop), <base>.mic.wav (mic).
+    // All three are always written (silence-padded) so the output track layout is
+    // stable regardless of which sources are enabled. False if the mix can't open.
+    bool start(const std::wstring& wavBase, int sampleRate = 48000, int channels = 2);
     void stop();
     bool isRunning() const { return m_running.load(); }
 
-    long long bytesWritten() const { return m_bytesWritten.load(); }
+    long long bytesWritten() const { return m_bytesMix.load(); }
     int sampleRate() const { return m_rate; }
     int channels()   const { return m_ch; }
 
@@ -85,9 +85,8 @@ private:
 
     void deviceThread(bool loopback);   // shared body for desktop + mic
     void pumpThread();
-    void finalizeWav();
-    // Patch the 44-byte RIFF/data header for one WAV handle and close it.
-    void finalizeWavHandle(HANDLE& h, long long dataBytes);
+    bool openWav(HANDLE& h, const std::wstring& path);   // create + reserve 44-byte header
+    void finalizeWav(HANDLE& h, long long dataBytes);    // patch sizes + close one WAV
 
     // Single-producer / single-consumer float ring (mutex guarded). Overwrites
     // the oldest samples when full so a fast device clock can't grow latency.
@@ -143,13 +142,14 @@ private:
     Ring m_desktopRing;
     Ring m_micRing;
 
-    HANDLE m_wav = INVALID_HANDLE_VALUE;
-    std::atomic<long long> m_bytesWritten{0};
-
-    // Optional second track: microphone-only WAV (dual-track recording).
-    HANDLE m_micWav = INVALID_HANDLE_VALUE;
-    std::atomic<long long> m_micBytesWritten{0};
-    bool   m_dualTracks = false;
+    // Three independent output WAVs (mix / game / mic). Opened on the caller
+    // thread before the pump launches, then touched only by the pump until join.
+    HANDLE m_wavMix  = INVALID_HANDLE_VALUE;
+    HANDLE m_wavGame = INVALID_HANDLE_VALUE;
+    HANDLE m_wavMic  = INVALID_HANDLE_VALUE;
+    std::atomic<long long> m_bytesMix{0};
+    std::atomic<long long> m_bytesGame{0};
+    std::atomic<long long> m_bytesMic{0};
 
     std::thread m_desktopT;
     std::thread m_micT;

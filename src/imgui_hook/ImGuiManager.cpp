@@ -281,16 +281,8 @@ void ImGuiManager::loadSettings() {
     st.language   = mod->getSavedValue<int>("language", 0);
     st.fontFamily = mod->getSavedValue<int>("font-family", 0);
     st.fontSize   = (float)mod->getSavedValue<double>("font-size", 16.0);
-    {
-        int ve = mod->getSavedValue<int>("video-encoder", (int)VideoEncoder::X264);
-        if (ve < 0 || ve > (int)VideoEncoder::QSV) ve = (int)VideoEncoder::X264; // drop removed MJPEG
-        st.videoEncoder = static_cast<VideoEncoder>(ve);
-    }
+    st.videoEncoder = static_cast<VideoEncoder>(mod->getSavedValue<int>("video-encoder", (int)VideoEncoder::X264));
     st.rateControl  = static_cast<RateControl>(mod->getSavedValue<int>("rate-control", (int)RateControl::CQP));
-    st.encodeMode   = static_cast<EncodeMode>(mod->getSavedValue<int>("encode-mode", (int)EncodeMode::MaxQuality));
-    st.rateMode     = static_cast<RateMode>(mod->getSavedValue<int>("rate-mode", (int)RateMode::Quality));
-    st.fullColorRange = mod->getSavedValue<bool>("full-color-range", false);
-    st.highChroma444  = mod->getSavedValue<bool>("high-chroma-444", false);
     st.perfProfile  = static_cast<PerfProfile>(mod->getSavedValue<int>("perf-profile", (int)PerfProfile::Balanced));
     st.previewFps    = mod->getSavedValue<int>("preview-fps", 30);
     st.previewMaxDim = mod->getSavedValue<int>("preview-maxdim", 1280);
@@ -311,7 +303,6 @@ void ImGuiManager::loadSettings() {
     st.audioDesktopVol     = std::clamp((float)mod->getSavedValue<double>("audio-desktop-vol", 1.0), 0.0f, 3.0f);
     st.audioMicVol         = std::clamp((float)mod->getSavedValue<double>("audio-mic-vol", 1.0), 0.0f, 3.0f);
     st.audioBitrateKbps    = mod->getSavedValue<int>("audio-bitrate", 192);
-    st.audioTrackMode      = static_cast<AudioTrackMode>(mod->getSavedValue<int>("audio-track-mode", (int)AudioTrackMode::Single));
     st.desktopDeviceId     = mod->getSavedValue<std::string>("audio-desktop-id", "");
     st.micDeviceId         = mod->getSavedValue<std::string>("audio-mic-id", "");
     if (st.perfProfile != PerfProfile::Custom) applyPerfProfile(st, st.perfProfile);
@@ -326,10 +317,6 @@ void ImGuiManager::saveSettings() {
     mod->setSavedValue<double>("font-size", (double)st.fontSize);
     mod->setSavedValue<int>("video-encoder", (int)st.videoEncoder);
     mod->setSavedValue<int>("rate-control", (int)st.rateControl);
-    mod->setSavedValue<int>("encode-mode", (int)st.encodeMode);
-    mod->setSavedValue<int>("rate-mode", (int)st.rateMode);
-    mod->setSavedValue<bool>("full-color-range", st.fullColorRange);
-    mod->setSavedValue<bool>("high-chroma-444", st.highChroma444);
     mod->setSavedValue<int>("perf-profile", (int)st.perfProfile);
     mod->setSavedValue<int>("preview-fps", st.previewFps);
     mod->setSavedValue<int>("preview-maxdim", st.previewMaxDim);
@@ -350,7 +337,6 @@ void ImGuiManager::saveSettings() {
     mod->setSavedValue<double>("audio-desktop-vol", (double)st.audioDesktopVol);
     mod->setSavedValue<double>("audio-mic-vol", (double)st.audioMicVol);
     mod->setSavedValue<int>("audio-bitrate", st.audioBitrateKbps);
-    mod->setSavedValue<int>("audio-track-mode", (int)st.audioTrackMode);
     mod->setSavedValue<std::string>("audio-desktop-id", st.desktopDeviceId);
     mod->setSavedValue<std::string>("audio-mic-id", st.micDeviceId);
     st.savePending = false;
@@ -468,13 +454,17 @@ void ImGuiManager::applyTheme() {
 
 
 bool ImGuiManager::captureBackbuffer(bool needPixels) {
+    // The live GL viewport is the authoritative drawable size. Never request more
+    // than it (a stale-too-large cache drove the nvoglv64 glReadPixels OOB crash);
+    // clamp the cache down to it, and adopt it when the cache is unset.
     int vw = m_vpW, vh = m_vpH;
-    if (vw <= 0 || vh <= 0) {
-        GLint vp[4] = {0,0,0,0}; glGetIntegerv(GL_VIEWPORT, vp);
-        vw = vp[2]; vh = vp[3];
-        if (vw <= 0 || vh <= 0) return false;
-        m_vpX = vp[0]; m_vpY = vp[1]; m_vpW = vw; m_vpH = vh;
+    GLint vp[4] = {0,0,0,0}; glGetIntegerv(GL_VIEWPORT, vp);
+    if (vp[2] > 0 && vp[3] > 0) {
+        if (vw <= 0 || vw > vp[2]) vw = vp[2];
+        if (vh <= 0 || vh > vp[3]) vh = vp[3];
+        m_vpX = 0; m_vpY = 0; m_vpW = vw; m_vpH = vh;
     }
+    if (vw <= 0 || vh <= 0) return false;
     if (!needPixels && !m_visible) return false;
     m_gameW = vw; m_gameH = vh;
 
@@ -507,22 +497,42 @@ void ImGuiManager::captureSize(int vpW, int vpH, int& outW, int& outH, bool forc
 
 void ImGuiManager::uploadPreviewTexture() {
     if (m_pixbuf.empty() || m_gameW <= 0 || m_gameH <= 0) return;
+    if (m_pixbuf.size() < (size_t)m_gameW * (size_t)m_gameH * 4) return;  // sanity
+
+    // The on-screen preview is a small thumbnail. While recording, m_gameW/m_gameH
+    // are the FULL record resolution (720p/1080p), so swizzling + uploading the
+    // whole frame here piled multi-MB of CPU+GL work onto the (already heaviest)
+    // capture swap -> bimodal frame time -> FPS swing. Decimate with an integer
+    // stride to a small preview (~480px longest side): nearest-neighbour, no alloc,
+    // cuts cost by stride^2. m_gameW/m_gameH (the values submitFrame validates) are
+    // NOT touched; the UI samples the texture 0..1 so aspect stays correct.
+    const int kPreviewCap = 480;
+    int step = 1;
+    while ((m_gameW / step) > kPreviewCap || (m_gameH / step) > kPreviewCap) ++step;
+    const int pw = m_gameW / step;
+    const int ph = m_gameH / step;
+    if (pw <= 0 || ph <= 0) return;
+
     GLint prevTex = 0; glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex);
-    const size_t bytes = (size_t)m_gameW * (size_t)m_gameH * 4;
+    const size_t bytes = (size_t)pw * (size_t)ph * 4;
     if (m_previewScratch.size() != bytes) m_previewScratch.resize(bytes);
-    if (m_pixbufIsBGRA) {
-        const unsigned char* src = m_pixbuf.data();
-        unsigned char* dst = m_previewScratch.data();
-        for (size_t i = 0; i < bytes; i += 4) {
-            dst[i + 0] = src[i + 2];
-            dst[i + 1] = src[i + 1];
-            dst[i + 2] = src[i + 0];
-            dst[i + 3] = 255;
+
+    const unsigned char* src = m_pixbuf.data();
+    unsigned char* dst = m_previewScratch.data();
+    const size_t srcRow = (size_t)m_gameW * 4;
+    const bool bgra = m_pixbufIsBGRA;
+    for (int y = 0; y < ph; ++y) {
+        const unsigned char* sr = src + (size_t)(y * step) * srcRow;
+        unsigned char* dr = dst + (size_t)y * pw * 4;
+        for (int x = 0; x < pw; ++x) {
+            const unsigned char* s = sr + (size_t)(x * step) * 4;
+            if (bgra) { dr[0] = s[2]; dr[1] = s[1]; dr[2] = s[0]; }
+            else      { dr[0] = s[0]; dr[1] = s[1]; dr[2] = s[2]; }
+            dr[3] = 255;
+            dr += 4;
         }
-    } else {
-        std::memcpy(m_previewScratch.data(), m_pixbuf.data(), bytes);
-        for (size_t i = 3; i < bytes; i += 4) m_previewScratch[i] = 255;
     }
+
     if (m_gameTex == 0) {
         glGenTextures(1, &m_gameTex);
         glBindTexture(GL_TEXTURE_2D, m_gameTex);
@@ -533,15 +543,14 @@ void ImGuiManager::uploadPreviewTexture() {
     } else {
         glBindTexture(GL_TEXTURE_2D, m_gameTex);
     }
-    // Internal format is always GL_RGBA (valid everywhere); the external format
-    // is always GL_RGBA to avoid driver/ANGLE BGRA upload quirks; the scratch
-    // buffer is converted into RGBA with an opaque alpha channel above.
-    if (m_gameW != m_texW || m_gameH != m_texH) {
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_gameW, m_gameH, 0,
+    // GL_RGBA internal + external (avoids ANGLE BGRA upload quirks); scratch is the
+    // decimated RGBA preview built above.
+    if (pw != m_texW || ph != m_texH) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, pw, ph, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, m_previewScratch.data());
-        m_texW = m_gameW; m_texH = m_gameH;
+        m_texW = pw; m_texH = ph;
     } else {
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_gameW, m_gameH,
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, pw, ph,
                         GL_RGBA, GL_UNSIGNED_BYTE, m_previewScratch.data());
     }
     glBindTexture(GL_TEXTURE_2D, (GLuint)prevTex);
@@ -549,7 +558,7 @@ void ImGuiManager::uploadPreviewTexture() {
 
 void ImGuiManager::plannedRecordSize(int& w, int& h) const {
     int vw = m_vpW, vh = m_vpH;
-    if (vw <= 0 || vh <= 0) { GLint vp[4]; glGetIntegerv(GL_VIEWPORT, vp); vw = vp[2]; vh = vp[3]; }
+    if (vw <= 0 || vh <= 0) { GLint vp[4] = {0,0,0,0}; glGetIntegerv(GL_VIEWPORT, vp); vw = vp[2]; vh = vp[3]; }
     if (vw <= 0 || vh <= 0) { w = 1280; h = 720; return; }
     captureSize(vw, vh, w, h, true);
 }
@@ -593,12 +602,15 @@ void ImGuiManager::renderFrame(int fbW, int fbH) {
     // ---- Update viewport cache (only on resize) ----
     if (fbW != m_lastFbW || fbH != m_lastFbH) {
         m_lastFbW = fbW; m_lastFbH = fbH;
-        GLint vp[4]; glGetIntegerv(GL_VIEWPORT, vp);
-        int cw = 0, ch = 0;
-        if (vp[2] > 0 && vp[3] > 0) { cw = vp[2]; ch = vp[3]; }
-        if (fbW > cw && fbH > ch) { cw = fbW; ch = fbH; }
-        if (cw > 0 && ch > 0) {
-            m_vpX = 0; m_vpY = 0; m_vpW = cw; m_vpH = ch;
+        // The real GL drawable is the viewport, NOT getFrameSize() (logical points
+        // that can exceed the drawable and overrun glReadPixels -> the nvoglv64
+        // crash). Never inflate to fbW/fbH; use them only as a last-resort fallback
+        // when no viewport exists yet.
+        GLint vp[4] = {0,0,0,0}; glGetIntegerv(GL_VIEWPORT, vp);
+        if (vp[2] > 0 && vp[3] > 0) {
+            m_vpX = 0; m_vpY = 0; m_vpW = vp[2]; m_vpH = vp[3];
+        } else if ((m_vpW <= 0 || m_vpH <= 0) && fbW > 0 && fbH > 0) {
+            m_vpX = 0; m_vpY = 0; m_vpW = fbW; m_vpH = fbH;
         }
     }
 
@@ -629,16 +641,27 @@ void ImGuiManager::renderFrame(int fbW, int fbH) {
             m_lastRecordCaptureMs += interval;
             ++dueFrames;
         }
+        // After a big stall (alt-tab, load spike) the backlog can exceed the 300 cap;
+        // without resyncing, the record clock lags wall-time forever and keeps
+        // emitting catch-up bursts (oscillation). Snap to now to drop the dead
+        // backlog. (Does not touch borrow-fps — only the capture-cadence clock.)
+        if (dueFrames >= 300) m_lastRecordCaptureMs = now;
 
         if (dueFrames > 0) {
+            // Capture swap: do ONLY capture + submit. The preview swizzle+upload is
+            // deliberately NOT run here — stacking it on the heaviest swap is what
+            // made frame time bimodal (the FPS swing). It runs on a later idle swap.
             if (captureBackbuffer(true) && !m_pixbuf.empty()) {
-                if (m_visible && now - m_lastCaptureMs >= 1000.0 / 30.0) {
-                    m_lastCaptureMs = now;
-                    uploadPreviewTexture();
-                }
                 int w = m_gameW, h = m_gameH;
                 Recorder::get().submitFrame(std::move(m_pixbuf), w, h, dueFrames);
             }
+        } else if (m_visible && now - m_lastPreviewMs >= 1000.0 / 12.0) {
+            // Idle swap (no capture due): refresh the small preview at ~12fps off the
+            // capture swaps. captureBackbuffer(true) re-fills m_pixbuf cheaply (the
+            // pipeline repeats last-good), then we upload the decimated thumbnail.
+            m_lastPreviewMs = now;
+            if (captureBackbuffer(true) && !m_pixbuf.empty())
+                uploadPreviewTexture();
         }
     } else {
         if (m_wasRecording) {

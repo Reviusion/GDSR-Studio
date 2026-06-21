@@ -30,12 +30,6 @@ public:
     bool start(HWND hwnd);
     void stop();
 
-    // Probe the bundled ffmpeg once for hardware H.264 encoders. Returns -1 while
-    // the probe is still running, then a cached bitmask: bit0=NVENC, bit1=AMF,
-    // bit2=QSV. x264 is always available.
-    static int availableHwEncoders();
-    static constexpr unsigned kEncNVENC = 1u, kEncAMF = 2u, kEncQSV = 4u;
-
     bool  isRecording()  const { return m_running.load(); }
     bool  isFinalizing() const { return m_finalizing.load(); }
     int   saveProgress() const { return m_saveProgress.load(); }
@@ -69,9 +63,8 @@ private:
     // the temp video as a video-only result).
     bool runMux();
 
-    // Deeper queue so a burst at 120/240 fps doesn't immediately trip the
-    // borrow-fps backpressure (each slot is W*H*4 bytes; ~64 MB at 1080p*8).
-    static constexpr size_t kMaxQueued = 8;
+    static constexpr size_t kMaxQueued = 8;   // deeper encode queue rides out brief
+                                              // encoder stalls without back-pressuring GD
 
     HWND m_hwnd = nullptr;
     int m_srcX = 0, m_srcY = 0, m_srcW = 0, m_srcH = 0;
@@ -107,10 +100,11 @@ private:
     std::string m_lastError;
     std::string m_outFile;        // final muxed mp4 the user gets
     std::string m_videoTmpFile;   // temp video-only mp4 (== m_outFile when no audio)
-    std::string m_audioTmpFile;   // temp mixed WAV (empty when no audio)
-    std::string m_audioTmpFile2;  // temp mic-only WAV (empty unless dual-track)
+    std::string m_audioTmpBase;   // stem passed to AudioCapture (empty when no audio)
+    std::string m_audioTmpMix;    // <base>.mix.wav  (game+mic, default track)
+    std::string m_audioTmpGame;   // <base>.game.wav (desktop only)
+    std::string m_audioTmpMic;    // <base>.mic.wav  (mic only)
     bool m_audioOn = false;       // an audio source was armed for this recording
-    bool m_dualAudio = false;     // write a 2nd (mic-only) audio track into the mp4
     int  m_audioBitrate = 192;
     mutable std::mutex m_ffmpegMutex;
     void* m_ffmpegProc = nullptr;

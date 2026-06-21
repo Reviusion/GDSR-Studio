@@ -202,7 +202,7 @@ void CaptureScheduler::shutdown() {
     stopWorker();
     if (m_backend) { m_backend->shutdown(); m_backend.reset(); }
     std::lock_guard<std::mutex> lk(m_mtx);
-    m_ready.clear(); m_pending = 0; m_haveLast = false;
+    m_ready.clear(); m_pending = 0; m_haveLast = false; m_lastGood.bytes.clear();
 }
 
 } // namespace gdr

@@ -471,16 +471,6 @@ namespace {
             st.audioBitrateKbps = clampi(st.audioBitrateKbps, 32, 512);
             st.savePending = true;
         }
-
-        // Audio track layout: single mixed track, or a 2nd microphone-only track.
-        ImGui::TextUnformatted(Localization::L().audio_tracks);
-        ImGui::SetNextItemWidth(-1);
-        int tm = (int)st.audioTrackMode;
-        if (ImGui::Combo("##atracks", &tm, Localization::L().audio_tracks_items)) {
-            st.audioTrackMode = (AudioTrackMode)tm; st.savePending = true;
-        }
-        if (st.audioTrackMode == AudioTrackMode::Dual && !st.audioMicEnabled)
-            ImGui::TextDisabled("%s", "Включите микрофон, чтобы получить 2-ю дорожку");
     }
 
     void drawRecordingSettings() {
@@ -488,20 +478,15 @@ namespace {
         ImGui::SeparatorText(Localization::L().rec_section_video);
 
         // FPS — самый понятный параметр
-        const char* fpsItems[] = { "24", "30", "60", "120", "240" };
-        const int   fpsVals[]  = { 24, 30, 60, 120, 240 };
-        const int   fpsCount   = 5;
-        int fpsIdx = 2;
-        for (int i = 0; i < fpsCount; ++i) if (fpsVals[i] == st.recFps) { fpsIdx = i; break; }
+        const char* fpsItems[] = { "24", "30", "60" };
+        const int   fpsVals[]  = { 24, 30, 60 };
+        int fpsIdx = 1;
+        for (int i = 0; i < 3; ++i) if (fpsVals[i] == st.recFps) { fpsIdx = i; break; }
         ImGui::Text("%s", Localization::L().recording_fps);
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::Combo("##fps", &fpsIdx, fpsItems, fpsCount)) {
+        if (ImGui::Combo("##fps", &fpsIdx, fpsItems, 3)) {
             st.recFps = fpsVals[fpsIdx]; st.perfProfile = PerfProfile::Custom; st.savePending = true;
         }
-        if (st.recFps >= 120)
-            ImGui::TextDisabled("%s", st.encodeMode == EncodeMode::MaxQuality
-                ? "120+ FPS: лучше выбрать «Макс. производительность»"
-                : "120+ FPS требует мощного ПК");
 
         ImGui::Spacing();
 
@@ -521,99 +506,26 @@ namespace {
 
         ImGui::Spacing();
 
-        // Кодек — с фоновой проверкой доступности HW-кодеков (тест-кодирование).
+        // Качество — от 0 (лучшее) до 51 (худшее, но быстрое)
+        ImGui::Text("%s", Localization::L().recording_quality);
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::SliderInt("##quality", &st.quality, 10, 45)) {
+            st.perfProfile = PerfProfile::Custom; st.savePending = true;
+        }
+        ImGui::TextDisabled("%s", st.quality < 20 ? Localization::L().rec_quality_best : st.quality < 30 ? Localization::L().rec_quality_good : st.quality < 38 ? Localization::L().rec_quality_medium : Localization::L().rec_quality_fast);
+
+        ImGui::Spacing();
+
+        // Кодек
         ImGui::Text("%s", Localization::L().recording_encoder);
-        int hwMask = Recorder::availableHwEncoders(); // -1, пока проверка идёт
-        struct EncOpt { VideoEncoder id; const char* label; unsigned bit; };
-        static const EncOpt encOpts[] = {
-            { VideoEncoder::X264,  "x264 (CPU)",     0u },
-            { VideoEncoder::NVENC, "NVENC (NVIDIA)", Recorder::kEncNVENC },
-            { VideoEncoder::AMF,   "AMF (AMD)",      Recorder::kEncAMF },
-            { VideoEncoder::QSV,   "QSV (Intel)",    Recorder::kEncQSV },
-        };
-        auto encAvailable = [&](const EncOpt& o){ return o.bit == 0u || hwMask < 0 || (hwMask & (int)o.bit); };
-        const char* curLabel = "x264 (CPU)";
-        for (auto& o : encOpts) if (o.id == st.videoEncoder) curLabel = o.label;
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::BeginCombo("##enc", curLabel)) {
-            for (auto& o : encOpts) {
-                bool avail = encAvailable(o);
-                ImGui::BeginDisabled(!avail);
-                std::string item = o.label;
-                if (!avail) item += "  (не найден)";
-                if (ImGui::Selectable(item.c_str(), o.id == st.videoEncoder)) {
-                    st.videoEncoder = o.id; st.perfProfile = PerfProfile::Custom; st.savePending = true;
-                }
-                ImGui::EndDisabled();
-            }
-            ImGui::EndCombo();
-        }
-        if (st.videoEncoder != VideoEncoder::X264) {
-            if (hwMask < 0) {
-                ImGui::TextDisabled("Проверка кодеков…");
-            } else {
-                bool ok = false; for (auto& o : encOpts) if (o.id == st.videoEncoder) ok = encAvailable(o);
-                ImGui::TextDisabled("%s", ok ? Localization::L().rec_no_hw_encoder
-                                              : "Этот кодек недоступен — выберите x264, иначе запись не начнётся.");
-            }
-        }
-
-        ImGui::Spacing();
-
-        // Режим кодирования (качество/производительность) — для всех кодеков
-        ImGui::Text("%s", Localization::L().recording_encode_mode);
-        ImGui::SetNextItemWidth(-1);
-        int em = (int)st.encodeMode;
-        if (ImGui::Combo("##encmode", &em, Localization::L().encode_mode_items)) {
-            st.encodeMode = (EncodeMode)em; st.perfProfile = PerfProfile::Custom; st.savePending = true;
-        }
-
-        ImGui::Spacing();
-
-        // Контроль битрейта: постоянное качество (CRF/CQ/QP) или постоянный битрейт.
-        ImGui::Text("%s", Localization::L().recording_rate_control);
-        ImGui::SetNextItemWidth(-1);
-        int rm = (int)st.rateMode;
-        if (ImGui::Combo("##ratemode", &rm, Localization::L().rate_control_items)) {
-            st.rateMode = (RateMode)rm; st.perfProfile = PerfProfile::Custom; st.savePending = true;
-        }
-
-        ImGui::Spacing();
-
-        if (st.rateMode == RateMode::Quality) {
-            // Качество — 0 (лучшее/большой файл) … 51 (хуже/маленький файл).
-            ImGui::Text("%s", Localization::L().recording_quality);
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("##quality", &st.quality, 0, 51)) {
-                st.quality = clampi(st.quality, 0, 51);
-                st.perfProfile = PerfProfile::Custom; st.savePending = true;
-            }
-            ImGui::TextDisabled("%s", st.quality < 20 ? Localization::L().rec_quality_best : st.quality < 30 ? Localization::L().rec_quality_good : st.quality < 38 ? Localization::L().rec_quality_medium : Localization::L().rec_quality_fast);
-        } else {
-            // Постоянный битрейт (кбит/с).
-            ImGui::Text("%s", Localization::L().recording_bitrate);
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::SliderInt("##bitrate", &st.bitrateKbps, 1000, 100000, "%d kbps")) {
-                st.bitrateKbps = clampi(st.bitrateKbps, 500, 200000);
-                st.perfProfile = PerfProfile::Custom; st.savePending = true;
-            }
-        }
-
-        ImGui::Spacing();
-
-        // Точность цвета: полный диапазон (ярче/меньше бандинга) и 4:4:4 (резкие
-        // цветные края/текст; только x264).
-        if (ImGui::Checkbox(Localization::L().recording_full_range, &st.fullColorRange)) {
+        int enc = (int)st.videoEncoder;
+        if (ImGui::Combo("##enc", &enc, "x264 (CPU)\0NVENC\0AMF\0QSV\0MJPEG (fast)\0")) {
+            st.videoEncoder = (VideoEncoder)enc;
             st.perfProfile = PerfProfile::Custom; st.savePending = true;
         }
-        bool can444 = (st.videoEncoder == VideoEncoder::X264);
-        ImGui::BeginDisabled(!can444);
-        if (ImGui::Checkbox(Localization::L().recording_chroma444, &st.highChroma444)) {
-            st.perfProfile = PerfProfile::Custom; st.savePending = true;
-        }
-        ImGui::EndDisabled();
-        if (!can444)
-            ImGui::TextDisabled("4:4:4 доступно только для x264");
+        if (st.videoEncoder != VideoEncoder::X264)
+            ImGui::TextDisabled("%s", Localization::L().rec_no_hw_encoder);
 
         ImGui::Spacing();
 

@@ -48,7 +48,8 @@ public:
     void shutdown() override;
 
 private:
-    static constexpr int kSlots = 8;   // deeper staging ring for 120/240 fps bursts
+    static constexpr int kSlots = 6;   // deeper ring absorbs encoder/GPU jitter so
+                                       // the render thread blocks on borrow less often
 
     enum class SlotState { Free, Copied, Mapping };
     struct Slot {
@@ -60,6 +61,10 @@ private:
     // Returns an AddRef'd backbuffer texture for the just-rendered frame, plus
     // its size and DXGI format. Caller must Release(). nullptr on failure.
     ID3D11Texture2D* acquireBackbuffer(int& w, int& h, unsigned int& fmt);
+    // Cached single-sample target for MSAA backbuffers — reused across frames so
+    // ResolveSubresource doesn't allocate a texture every captured frame (jitter).
+    ID3D11Texture2D* m_resolveTex = nullptr;
+    int m_resolveW = 0, m_resolveH = 0; unsigned int m_resolveFmt = 0;
     bool findSwapChain();
     bool ensureRing(int w, int h, unsigned int fmt);
     void releaseRing();
