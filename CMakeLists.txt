@@ -3,7 +3,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(gdrm-studio VERSION 0.2.0)
+project(gdrm-studio VERSION 0.2.1)
 
 # ---------------------------------------------------------------------------
 # Dear ImGui as an isolated static library.

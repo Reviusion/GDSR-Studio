@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.1
+
+- Added 120 fps to the recording framerate options (24 / 30 / 60 / 120)
+
 ## v0.2.0
 
 Two big things this release: separate audio tracks, and a much steadier framerate while

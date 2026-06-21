@@ -477,14 +477,15 @@ namespace {
         auto& st = studioState();
         ImGui::SeparatorText(Localization::L().rec_section_video);
 
-        // FPS — самый понятный параметр
-        const char* fpsItems[] = { "24", "30", "60" };
-        const int   fpsVals[]  = { 24, 30, 60 };
+        // FPS - самый понятный параметр
+        const char* fpsItems[] = { "24", "30", "60", "120" };
+        const int   fpsVals[]  = { 24, 30, 60, 120 };
+        const int   fpsCount   = 4;
         int fpsIdx = 1;
-        for (int i = 0; i < 3; ++i) if (fpsVals[i] == st.recFps) { fpsIdx = i; break; }
+        for (int i = 0; i < fpsCount; ++i) if (fpsVals[i] == st.recFps) { fpsIdx = i; break; }
         ImGui::Text("%s", Localization::L().recording_fps);
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::Combo("##fps", &fpsIdx, fpsItems, 3)) {
+        if (ImGui::Combo("##fps", &fpsIdx, fpsItems, fpsCount)) {
             st.recFps = fpsVals[fpsIdx]; st.perfProfile = PerfProfile::Custom; st.savePending = true;
         }
 
