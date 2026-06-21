@@ -90,11 +90,14 @@ std::vector<AudioDeviceInfo> AudioCapture::listDevices(bool render) {
     return out;
 }
 
-bool AudioCapture::start(const std::wstring& wavPath, int sampleRate, int channels) {
+bool AudioCapture::start(const std::wstring& wavPath, const std::wstring& micWavPath,
+                         int sampleRate, int channels) {
     if (m_running.load()) return true;
     m_rate = sampleRate > 0 ? sampleRate : 48000;
     m_ch   = 2; // mixer always outputs stereo
     m_bytesWritten.store(0);
+    m_micBytesWritten.store(0);
+    m_dualTracks = !micWavPath.empty();
 
     size_t ringCap = (size_t)m_rate * 2 * 2; // ~2 s stereo
     m_desktopRing.init(ringCap);
@@ -117,6 +120,19 @@ bool AudioCapture::start(const std::wstring& wavPath, int sampleRate, int channe
     unsigned char hdr[44] = {0};
     DWORD wrote = 0;
     WriteFile(m_wav, hdr, sizeof(hdr), &wrote, nullptr);
+
+    // Optional microphone-only second track.
+    if (m_dualTracks) {
+        m_micWav = CreateFileW(micWavPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (m_micWav == INVALID_HANDLE_VALUE) {
+            geode::log::warn("GDSR Audio: cannot create mic wav ({}), falling back to single track",
+                             (unsigned)GetLastError());
+            m_dualTracks = false; // keep the primary mixed track; just no 2nd track
+        } else {
+            WriteFile(m_micWav, hdr, sizeof(hdr), &wrote, nullptr);
+        }
+    }
 
     bool wantDesktop = m_desktopEnabled.load();
     bool wantMic     = m_micEnabled.load();
@@ -155,32 +171,37 @@ void AudioCapture::stop() {
     m_micLevel.store(0.0f);
 }
 
-// Patch the RIFF/data sizes into the header and close the file.
+// Patch the RIFF/data sizes into both WAV headers and close them.
 void AudioCapture::finalizeWav() {
-    if (m_wav == INVALID_HANDLE_VALUE) return;
-    long long dataBytes = m_bytesWritten.load();
+    finalizeWavHandle(m_wav,    m_bytesWritten.load());
+    finalizeWavHandle(m_micWav, m_micBytesWritten.load());
+}
+
+// Patch the RIFF/data sizes into one header and close that file.
+void AudioCapture::finalizeWavHandle(HANDLE& h, long long dataBytes) {
+    if (h == INVALID_HANDLE_VALUE) return;
     uint32_t dataSize = (uint32_t)std::min<long long>(dataBytes, 0xFFFFFFFFll - 44);
     uint32_t byteRate = (uint32_t)(m_rate * m_ch * 2);
 
-    unsigned char h[44];
+    unsigned char hd[44];
     auto put32 = [](unsigned char* p, uint32_t v) { p[0]=v&0xFF; p[1]=(v>>8)&0xFF; p[2]=(v>>16)&0xFF; p[3]=(v>>24)&0xFF; };
     auto put16 = [](unsigned char* p, uint16_t v) { p[0]=v&0xFF; p[1]=(v>>8)&0xFF; };
-    memcpy(h + 0,  "RIFF", 4);  put32(h + 4,  36 + dataSize);
-    memcpy(h + 8,  "WAVE", 4);
-    memcpy(h + 12, "fmt ", 4);  put32(h + 16, 16);
-    put16(h + 20, 1);                       // PCM
-    put16(h + 22, (uint16_t)m_ch);
-    put32(h + 24, (uint32_t)m_rate);
-    put32(h + 28, byteRate);
-    put16(h + 32, (uint16_t)(m_ch * 2));    // block align
-    put16(h + 34, 16);                       // bits per sample
-    memcpy(h + 36, "data", 4);  put32(h + 40, dataSize);
+    memcpy(hd + 0,  "RIFF", 4);  put32(hd + 4,  36 + dataSize);
+    memcpy(hd + 8,  "WAVE", 4);
+    memcpy(hd + 12, "fmt ", 4);  put32(hd + 16, 16);
+    put16(hd + 20, 1);                       // PCM
+    put16(hd + 22, (uint16_t)m_ch);
+    put32(hd + 24, (uint32_t)m_rate);
+    put32(hd + 28, byteRate);
+    put16(hd + 32, (uint16_t)(m_ch * 2));    // block align
+    put16(hd + 34, 16);                       // bits per sample
+    memcpy(hd + 36, "data", 4);  put32(hd + 40, dataSize);
 
-    SetFilePointer(m_wav, 0, nullptr, FILE_BEGIN);
+    SetFilePointer(h, 0, nullptr, FILE_BEGIN);
     DWORD wrote = 0;
-    WriteFile(m_wav, h, sizeof(h), &wrote, nullptr);
-    CloseHandle(m_wav);
-    m_wav = INVALID_HANDLE_VALUE;
+    WriteFile(h, hd, sizeof(hd), &wrote, nullptr);
+    CloseHandle(h);
+    h = INVALID_HANDLE_VALUE;
 }
 
 // ---------------------------------------------------------------------------
@@ -354,6 +375,7 @@ void AudioCapture::pumpThread() {
 
     std::vector<float>   dtmp, mtmp;
     std::vector<int16_t> s16;
+    std::vector<int16_t> s16mic; // mic-only second track (dual-track mode)
 
     while (m_running.load()) {
         double elapsed = nowS() - t0;
@@ -366,6 +388,8 @@ void AudioCapture::pumpThread() {
         if (dtmp.size() < need) dtmp.resize(need);
         if (mtmp.size() < need) mtmp.resize(need);
         if (s16.size()  < need) s16.resize(need);
+        const bool dual = (m_micWav != INVALID_HANDLE_VALUE);
+        if (dual && s16mic.size() < need) s16mic.resize(need);
 
         size_t dN = m_desktopRing.pop(dtmp.data(), need);
         size_t mN = m_micRing.pop(mtmp.data(), need);
@@ -376,22 +400,28 @@ void AudioCapture::pumpThread() {
         const float mVol = std::clamp(m_micVol.load(), 0.0f, 3.0f);
 
         for (size_t i = 0; i < need; ++i) {
-            float s = 0.0f;
+            float mic = (mOn && i < mN) ? mtmp[i] * mVol : 0.0f;
+            float s = mic;
             if (dOn && i < dN) s += dtmp[i] * dVol;
-            if (mOn && i < mN) s += mtmp[i] * mVol;
             s16[i] = toS16(s);
+            if (dual) s16mic[i] = toS16(mic);
         }
 
-        const BYTE* bp = reinterpret_cast<const BYTE*>(s16.data());
-        size_t left = need * sizeof(int16_t);
-        bool ok = true;
-        while (left > 0) {
-            DWORD chunk = (DWORD)std::min<size_t>(left, 1u << 20);
-            DWORD w = 0;
-            if (!WriteFile(m_wav, bp, chunk, &w, nullptr) || w == 0) { ok = false; break; }
-            bp += w; left -= w; m_bytesWritten.fetch_add(w);
-        }
-        if (!ok) break;
+        // Helper: write a full s16 block to a handle, advancing its byte counter.
+        auto writeBlock = [&](HANDLE h, const int16_t* src, std::atomic<long long>& counter) -> bool {
+            const BYTE* bp = reinterpret_cast<const BYTE*>(src);
+            size_t left = need * sizeof(int16_t);
+            while (left > 0) {
+                DWORD chunk = (DWORD)std::min<size_t>(left, 1u << 20);
+                DWORD w = 0;
+                if (!WriteFile(h, bp, chunk, &w, nullptr) || w == 0) return false;
+                bp += w; left -= w; counter.fetch_add(w);
+            }
+            return true;
+        };
+
+        if (!writeBlock(m_wav, s16.data(), m_bytesWritten)) break;
+        if (dual && !writeBlock(m_micWav, s16mic.data(), m_micBytesWritten)) break;
 
         emitted += toEmit;
         Sleep(4);

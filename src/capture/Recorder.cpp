@@ -47,6 +47,124 @@ static std::string tsN(){std::time_t t=std::time(nullptr);std::tm tm{};localtime
 // down to the encode rate; short enough that a wedged ffmpeg can't hang GD.
 static constexpr int kBackpressureCapMs = 500;
 
+// Build the ffmpeg encoder argument string for the chosen codec.
+//
+// Every codec exposes three EncodeModes — MaxPerformance / Balanced / MaxQuality
+// — and either constant-quality (CRF/CQ/QP) or constant-bitrate (CBR) rate
+// control. These are tuned for an OFFLINE recorder where latency is irrelevant,
+// so the hardware encoders use their high-quality presets + look-ahead + AQ +
+// B-frames instead of the old "ultra low latency / speed" streaming presets that
+// produced the blocky, soft picture. `qv` is the 0-51 quality target (lower =
+// better), `br` the bitrate ceiling in kbps, `fps` the recording framerate.
+static std::string buildEncoderArgs(int ei, EncodeMode mode, bool cbr,
+                                    int qv, int br, int fps, bool wide444){
+    auto S=[](int v){return std::to_string(v);};
+    const std::string g=" -g "+S(fps*2);
+    switch(ei){
+        // ---- NVENC (NVIDIA) — VBR+CQ capped by the bitrate ceiling for quality,
+        //      constqp/low-latency only in MaxPerformance. ----
+        case 1:{
+            std::string e="-c:v h264_nvenc -profile:v high";
+            if(mode==EncodeMode::MaxPerformance){
+                e+=" -preset p1 -tune ll -bf 0";
+                e+= cbr ? " -rc cbr -b:v "+S(br)+"k"
+                        : " -rc constqp -qp "+S(qv);
+            } else if(mode==EncodeMode::Balanced){
+                e+=" -preset p5 -tune hq -multipass qres -spatial-aq 1 -rc-lookahead 8 -bf 2 -b_ref_mode middle"+g;
+                e+= cbr ? " -rc cbr -b:v "+S(br)+"k"
+                        : " -rc vbr -cq "+S(qv)+" -b:v 0 -maxrate "+S(br)+"k -bufsize "+S(br*2)+"k";
+            } else { // MaxQuality
+                e+=" -preset p7 -tune hq -multipass fullres -spatial-aq 1 -temporal-aq 1 -rc-lookahead 32 -bf 3 -b_ref_mode middle"+g;
+                e+= cbr ? " -rc cbr -b:v "+S(br)+"k"
+                        : " -rc vbr -cq "+S(qv)+" -b:v 0 -maxrate "+S(br)+"k -bufsize "+S(br*2)+"k";
+            }
+            return e;
+        }
+        // ---- AMF (AMD) — transcoding usage + quality preset for recording;
+        //      lowlatency/speed only in MaxPerformance. ----
+        case 2:{
+            std::string e="-c:v h264_amf -profile:v high";
+            if(mode==EncodeMode::MaxPerformance) e+=" -usage lowlatency -quality speed -preanalysis 0";
+            else if(mode==EncodeMode::Balanced)  e+=" -usage transcoding -quality balanced -preanalysis 1";
+            else                                 e+=" -usage transcoding -quality quality -preanalysis 1 -vbaq 1";
+            e+=g;
+            if(cbr) e+=" -rc cbr -b:v "+S(br)+"k";
+            else    e+=" -rc cqp -qp_i "+S(qv)+" -qp_p "+S(qv)+" -qp_b "+S(qv);
+            return e;
+        }
+        // ---- QSV (Intel) ----
+        case 3:{
+            std::string e="-c:v h264_qsv -profile:v high";
+            if(mode==EncodeMode::MaxPerformance) e+=" -preset veryfast -look_ahead 0";
+            else if(mode==EncodeMode::Balanced)  e+=" -preset medium -look_ahead 0";
+            else                                 e+=" -preset veryslow";
+            e+=g;
+            if(cbr) e+=" -b:v "+S(br)+"k";
+            else    e+=" -global_quality "+S(qv);
+            return e;
+        }
+        // ---- x264 (software; works everywhere) ----
+        //      MaxPerformance=superfast (CABAC stays on, unlike the old
+        //      ultrafast+zerolatency that caused the soft/blocky output),
+        //      Balanced=veryfast, MaxQuality=medium (all tools on). 4:4:4 picks
+        //      the high444 profile so coloured edges stay razor-sharp.
+        default:{
+            const char* preset = (mode==EncodeMode::MaxPerformance)?"superfast"
+                               : (mode==EncodeMode::Balanced)?"veryfast":"medium";
+            const char* prof = wide444 ? "high444" : "high";
+            std::string e=std::string("-c:v libx264 -profile:v ")+prof+" -preset "+preset;
+            if(cbr) e+=" -b:v "+S(br)+"k -maxrate "+S(br)+"k -bufsize "+S(br*2)+"k -nal-hrd cbr";
+            else    e+=" -crf "+S(qv);
+            e+=" -x264-params keyint="+S(fps*2)+":min-keyint="+S(fps);
+            return e;
+        }
+    }
+}
+
+// Run a command to completion with stdout/stderr discarded; return its exit code
+// (or -1 if it couldn't be launched). Bounded so a wedged probe can't hang.
+static int runExit(const std::string& cmdline){
+    STARTUPINFOW si{};si.cb=sizeof(si);si.dwFlags=STARTF_USESTDHANDLES;
+    SECURITY_ATTRIBUTES sa{sizeof(sa),0,TRUE};
+    HANDLE nul=CreateFileW(L"NUL",GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,&sa,OPEN_EXISTING,0,0);
+    si.hStdOutput=nul;si.hStdError=nul;si.hStdInput=nullptr;
+    PROCESS_INFORMATION pi{};auto wc=w2(cmdline);
+    if(!CreateProcessW(nullptr,wc.data(),nullptr,nullptr,TRUE,CREATE_NO_WINDOW,nullptr,nullptr,&si,&pi)){
+        if(nul&&nul!=INVALID_HANDLE_VALUE)CloseHandle(nul);return -1;
+    }
+    if(nul&&nul!=INVALID_HANDLE_VALUE)CloseHandle(nul);
+    DWORD wait=WaitForSingleObject(pi.hProcess,8000);
+    DWORD code=1;GetExitCodeProcess(pi.hProcess,&code);
+    if(wait==WAIT_TIMEOUT){TerminateProcess(pi.hProcess,1);code=1;}
+    CloseHandle(pi.hProcess);CloseHandle(pi.hThread);
+    return (int)code;
+}
+
+// Probe which hardware H.264 encoders actually work by attempting a 1-frame null
+// encode with each. Runs ONCE on a detached thread (so the UI never blocks);
+// returns -1 while the probe is still in flight, then the cached bitmask.
+int Recorder::availableHwEncoders(){
+    static std::atomic<int>  s_mask{-1};
+    static std::atomic<bool> s_started{false};
+    bool expected=false;
+    if(s_started.compare_exchange_strong(expected,true)){
+        std::thread([](){
+            auto test=[](const char* enc)->bool{
+                std::string c=q(ffPath())+" -hide_banner -loglevel error "
+                    "-f lavfi -i color=c=black:s=128x128:d=1 -frames:v 1 -c:v "+enc+" -f null -";
+                return runExit(c)==0;
+            };
+            unsigned m=0;
+            if(test("h264_nvenc")) m|=kEncNVENC;
+            if(test("h264_amf"))   m|=kEncAMF;
+            if(test("h264_qsv"))   m|=kEncQSV;
+            s_mask.store((int)m);
+            geode::log::info("GDSR: HW encoder probe mask={}", m);
+        }).detach();
+    }
+    return s_mask.load();
+}
+
 Recorder& Recorder::get(){static Recorder inst;return inst;}
 Recorder::~Recorder(){
     m_running.store(false);
@@ -73,26 +191,32 @@ bool Recorder::startFfmpeg(){
     auto& st=studioState();
     int qv=st.quality<0?0:(st.quality>51?51:st.quality);
     int br=st.bitrateKbps>0?st.bitrateKbps:4000;
+    int ei=(int)st.videoEncoder;if(ei<0||ei>3)ei=0;
+    bool cbr=(st.rateMode==RateMode::Bitrate);
+    // 4:4:4 is only wired for x264 (most consumer HW H.264 encoders can't do it);
+    // with a HW encoder selected we silently stay on 4:2:0.
+    bool wide444=st.highChroma444 && (VideoEncoder)ei==VideoEncoder::X264;
+    bool fullRange=st.fullColorRange;
+    const char* pixfmt = wide444 ? "yuv444p" : "yuv420p";
 
     // Capture rows are bottom-up (OpenGL convention; the D3D11 backend flips its
     // top-down readback to match). Feed those raw pixels through stdin and flip
-    // them back in ffmpeg.
+    // them back in ffmpeg. Downscale with lanczos (sharp) — fast_bilinear was the
+    // other half of the "soft picture" complaint; only MaxPerformance keeps the
+    // cheap bilinear path so it can sustain high fps.
     std::string vf="vflip";
-    if(st.outWidth>0&&st.outHeight>0&&(st.outWidth!=m_capW||st.outHeight!=m_capH))
-        vf+=",scale="+std::to_string(st.outWidth)+":"+std::to_string(st.outHeight)+":flags=fast_bilinear";
-    int ei=(int)st.videoEncoder;if(ei<0||ei>4)ei=0;
-    bool isMjpeg=(ei==4);
-    vf+=isMjpeg?",format=yuvj420p":",format=yuv420p";
-    std::string ec;
-    switch(ei){
-        case 1: ec="-c:v h264_nvenc -preset p1 -tune ll -rc constqp -qp "+std::to_string(qv)+" -b:v "+std::to_string(br)+"k -bf 0"; break;
-        case 2: ec="-c:v h264_amf -usage ultralowlatency -quality speed -rc cqp -qp_i "+std::to_string(qv)+" -qp_p "+std::to_string(qv)+" -b:v "+std::to_string(br)+"k"; break;
-        case 3: ec="-c:v h264_qsv -preset veryfast -global_quality "+std::to_string(qv)+" -look_ahead 0 -b:v "+std::to_string(br)+"k"; break;
-        case 4: ec="-c:v mjpeg -q:v 4 -huffman optimal"; break;
-        default:
-            ec="-c:v libx264 -preset ultrafast -tune zerolatency -crf "+std::to_string(qv)+" -maxrate "+std::to_string(br)+"k -bufsize "+std::to_string(br*2)+"k -pix_fmt yuv420p -x264-params keyint="+std::to_string(m_fps*2)+":min-keyint="+std::to_string(m_fps)+":scenecut=0";
-            break;
+    if(st.outWidth>0&&st.outHeight>0&&(st.outWidth!=m_capW||st.outHeight!=m_capH)){
+        const char* sflags=(st.encodeMode==EncodeMode::MaxPerformance)?"bilinear":"lanczos";
+        vf+=",scale="+std::to_string(st.outWidth)+":"+std::to_string(st.outHeight)+":flags="+sflags;
+        if(fullRange) vf+=":in_range=full:out_range=full";
+    } else if(fullRange){
+        // No resize, but still force full-range RGB->YUV conversion.
+        vf+=",scale=in_range=full:out_range=full";
     }
+    vf+=std::string(",format=")+pixfmt;
+    std::string ec=buildEncoderArgs(ei, st.encodeMode, cbr, qv, br, m_fps, wide444);
+    if(fullRange) ec+=" -color_range pc -colorspace bt709 -color_primaries bt709 -color_trc bt709";
+    else          ec+=" -color_range tv";
 
     std::ostringstream cmd;
     cmd << q(ffPath()) << " -hide_banner -loglevel error -y "
@@ -106,7 +230,7 @@ bool Recorder::startFfmpeg(){
         // outruns stopFfmpeg's wait, so ffmpeg is terminated mid-relocation and the
         // temp video is left corrupt -> the later mux fails ("mux: ffmpeg code 1").
         // moov-at-end plays fine locally and the mux reads it without issue.
-        << "-r " << m_fps; if(!isMjpeg) cmd << " -fps_mode cfr"; cmd << " -an " << q(m_videoTmpFile);
+        << "-r " << m_fps << " -fps_mode cfr -an " << q(m_videoTmpFile);
 
     SECURITY_ATTRIBUTES sa{sizeof(sa),0,TRUE};HANDLE rd=nullptr,wr=nullptr;
     DWORD pipeBuffer=(DWORD)std::min<size_t>(std::max<size_t>(m_bgraBytes*2,1u<<20),64ull*1024ull*1024ull);
@@ -245,12 +369,17 @@ bool Recorder::start(HWND hwnd){
     // final mp4 directly (no second pass).
     m_audioOn = st.audioDesktopEnabled || st.audioMicEnabled;
     m_audioBitrate = st.audioBitrateKbps>0 ? st.audioBitrateKbps : 192;
+    // A second (mic-only) track is only meaningful when dual-track is requested
+    // AND the mic is actually capturing.
+    m_dualAudio = m_audioOn && st.audioTrackMode==AudioTrackMode::Dual && st.audioMicEnabled;
     if(m_audioOn){
         m_videoTmpFile = base+".video.mp4";
         m_audioTmpFile = base+".audio.wav";
+        m_audioTmpFile2 = m_dualAudio ? (base+".mic.wav") : std::string();
     } else {
         m_videoTmpFile = m_outFile;     // ffmpeg writes straight to the final file
         m_audioTmpFile.clear();
+        m_audioTmpFile2.clear();
     }
 
     m_bgraBytes=(size_t)m_capW*m_capH*4;
@@ -274,9 +403,9 @@ bool Recorder::start(HWND hwnd){
         ac.setMicVolume(st.audioMicVol);
         ac.setDesktopMuted(st.audioDesktopMuted);
         ac.setMicMuted(st.audioMicMuted);
-        if(!ac.start(w2(m_audioTmpFile))){
+        if(!ac.start(w2(m_audioTmpFile), m_dualAudio ? w2(m_audioTmpFile2) : std::wstring())){
             geode::log::warn("GDSR: audio capture failed to start, recording video-only");
-            m_audioOn=false; m_audioTmpFile.clear();
+            m_audioOn=false; m_dualAudio=false; m_audioTmpFile.clear(); m_audioTmpFile2.clear();
             // ffmpeg already targets m_videoTmpFile; finalize still needs to turn
             // that temp into m_outFile (it renames when no WAV exists).
         }
@@ -338,6 +467,8 @@ void Recorder::finalizeStop(){
         if(muxed){
             std::filesystem::remove(std::filesystem::path(w2(m_videoTmpFile)),ec);
             std::filesystem::remove(std::filesystem::path(w2(m_audioTmpFile)),ec);
+            if(!m_audioTmpFile2.empty())
+                std::filesystem::remove(std::filesystem::path(w2(m_audioTmpFile2)),ec);
         } else {
             if(m_audioOn) geode::log::warn("GDSR: mux failed ({}), saving video-only",lastError());
             std::filesystem::remove(std::filesystem::path(w2(m_outFile)),ec);
@@ -345,6 +476,8 @@ void Recorder::finalizeStop(){
                                     std::filesystem::path(w2(m_outFile)),ec);
             if(!m_audioTmpFile.empty())
                 std::filesystem::remove(std::filesystem::path(w2(m_audioTmpFile)),ec);
+            if(!m_audioTmpFile2.empty())
+                std::filesystem::remove(std::filesystem::path(w2(m_audioTmpFile2)),ec);
         }
     }
 
@@ -379,14 +512,23 @@ bool Recorder::runMux(){
     std::error_code ec;
     if(!std::filesystem::exists(std::filesystem::path(w2(m_videoTmpFile)),ec)){setLastError("mux: no video");return false;}
     bool haveWav=std::filesystem::exists(std::filesystem::path(w2(m_audioTmpFile)),ec);
+    bool haveMic=m_dualAudio && !m_audioTmpFile2.empty() &&
+                 std::filesystem::exists(std::filesystem::path(w2(m_audioTmpFile2)),ec);
 
     std::ostringstream cmd;
     cmd << q(ffPath()) << " -hide_banner -loglevel error -y "
         << "-i " << q(m_videoTmpFile) << ' ';
     if(haveWav) cmd << "-i " << q(m_audioTmpFile) << ' ';
+    if(haveMic) cmd << "-i " << q(m_audioTmpFile2) << ' ';
     cmd << "-map 0:v:0 ";
     if(haveWav){
-        cmd << "-map 1:a:0 -c:a aac -b:a " << m_audioBitrate << "k ";
+        // Track 1 = full mix; Track 2 (dual mode) = isolated microphone. Encode
+        // both to AAC and label them so editors show meaningful track names.
+        cmd << "-map 1:a:0 ";
+        if(haveMic) cmd << "-map 2:a:0 ";
+        cmd << "-c:a aac -b:a " << m_audioBitrate << "k ";
+        cmd << "-metadata:s:a:0 title=Mix -metadata:s:a:0 handler_name=Mix ";
+        if(haveMic) cmd << "-metadata:s:a:1 title=Microphone -metadata:s:a:1 handler_name=Microphone ";
     }
     // No "+faststart": for a local file moov-at-end is fine, and faststart would
     // add a full extra read+write of the whole muxed file — on a long recording

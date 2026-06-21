@@ -47,8 +47,11 @@ public:
     // loopback sources), render=false -> capture devices (microphones).
     static std::vector<AudioDeviceInfo> listDevices(bool render);
 
-    // Begin capture, mixing to `wavPath`. Returns false if no device opened.
-    bool start(const std::wstring& wavPath, int sampleRate = 48000, int channels = 2);
+    // Begin capture, mixing to `wavPath`. If `micWavPath` is non-empty a SECOND
+    // microphone-only WAV is written in parallel (dual-track recording): track 1
+    // is the full mix, track 2 the isolated mic. Returns false if no device opened.
+    bool start(const std::wstring& wavPath, const std::wstring& micWavPath = std::wstring(),
+               int sampleRate = 48000, int channels = 2);
     void stop();
     bool isRunning() const { return m_running.load(); }
 
@@ -83,6 +86,8 @@ private:
     void deviceThread(bool loopback);   // shared body for desktop + mic
     void pumpThread();
     void finalizeWav();
+    // Patch the 44-byte RIFF/data header for one WAV handle and close it.
+    void finalizeWavHandle(HANDLE& h, long long dataBytes);
 
     // Single-producer / single-consumer float ring (mutex guarded). Overwrites
     // the oldest samples when full so a fast device clock can't grow latency.
@@ -140,6 +145,11 @@ private:
 
     HANDLE m_wav = INVALID_HANDLE_VALUE;
     std::atomic<long long> m_bytesWritten{0};
+
+    // Optional second track: microphone-only WAV (dual-track recording).
+    HANDLE m_micWav = INVALID_HANDLE_VALUE;
+    std::atomic<long long> m_micBytesWritten{0};
+    bool   m_dualTracks = false;
 
     std::thread m_desktopT;
     std::thread m_micT;

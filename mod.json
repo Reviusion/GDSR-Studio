@@ -6,7 +6,7 @@
     "id": "reviusion.gdsr-studio",
     "name": "GDSR Studio",
     "developer": "Reviusion",
-    "version": "v0.1.0",
+    "version": "v0.2.0",
     "description": "A full OBS-style recording studio inside Geometry Dash. Hit F8 to record — live preview, audio mixer, hardware encoding. No alt-tabbing required.",
     "tags": ["utility", "developer", "interface"],
     "settings": {

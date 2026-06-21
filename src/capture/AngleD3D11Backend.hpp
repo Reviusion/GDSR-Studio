@@ -48,7 +48,7 @@ public:
     void shutdown() override;
 
 private:
-    static constexpr int kSlots = 4;
+    static constexpr int kSlots = 8;   // deeper staging ring for 120/240 fps bursts
 
     enum class SlotState { Free, Copied, Mapping };
     struct Slot {

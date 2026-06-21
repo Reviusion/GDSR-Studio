@@ -12,11 +12,29 @@ enum class FontFamily { SegoeUI = 0, Tahoma = 1, Arial = 2, Consolas = 3, Defaul
 
 // H.264 encoder backend. X264 is software (works everywhere); the rest are
 // hardware encoders gated on the matching GPU vendor.
-enum class VideoEncoder { X264 = 0, NVENC = 1, AMF = 2, QSV = 3, MJPEG = 4 };
+enum class VideoEncoder { X264 = 0, NVENC = 1, AMF = 2, QSV = 3 };
 
 // Rate-control mode. Recorder maps these per-encoder (VBR is "quality+ceiling":
 // CRF on x264, ICQ on QSV). QVBR is NVENC-only, CQVBR is AMF-only.
 enum class RateControl { CQP = 0, QVBR = 1, CQVBR = 2, CBR = 3, VBR = 4 };
+
+// How the recorder decides the rate: by a constant quality target (CRF / CQ /
+// QP — best for a recorder, file size floats) or by a constant bitrate ceiling.
+// Maps onto RateControl for the encoder args (Quality -> CQP, Bitrate -> CBR).
+enum class RateMode { Quality = 0, Bitrate = 1 };
+
+// Per-codec encode mode. Trades encoder speed for picture quality and applies to
+// EVERY codec (x264/NVENC/AMF/QSV):
+//   MaxPerformance — fastest preset, keeps high fps (120/240) on weak hardware.
+//   Balanced       — middle ground.
+//   MaxQuality     — slow/high preset, all quality tools on (best picture).
+enum class EncodeMode { MaxPerformance = 0, Balanced = 1, MaxQuality = 2 };
+
+// Audio track layout in the final mp4:
+//   Single — desktop + mic mixed into one track (plays everywhere).
+//   Dual   — track 1 = full mix (desktop+mic), track 2 = microphone only
+//            (so it can be re-balanced / removed in an editor, OBS-style).
+enum class AudioTrackMode { Single = 0, Dual = 1 };
 
 // Performance presets. Trade preview/recording fidelity for game framerate.
 // Custom leaves the individual fields untouched.
@@ -64,13 +82,20 @@ struct StudioState {
     float audioDesktopVol     = 1.0f;    // 0..3 linear gain
     float audioMicVol         = 1.0f;
     int   audioBitrateKbps    = 192;     // AAC bitrate for the mux pass
+    AudioTrackMode audioTrackMode = AudioTrackMode::Single; // single mixed vs dual (mix + mic)
     std::string desktopDeviceId;         // WASAPI endpoint id; empty = default render
     std::string micDeviceId;             // WASAPI endpoint id; empty = default capture
 
     // video / recording settings
     VideoEncoder videoEncoder = VideoEncoder::X264;
     RateControl  rateControl  = RateControl::CQP;
-    int   quality     = 23;       // QP / CQ / CRF, 0-51
+    EncodeMode   encodeMode   = EncodeMode::MaxQuality; // quality/perf preset per codec
+    RateMode     rateMode     = RateMode::Quality;      // constant quality vs constant bitrate
+    bool  fullColorRange = false; // encode full-range (pc) instead of limited (tv) —
+                                  // preserves GD's vivid colours / less banding
+    bool  highChroma444  = false; // 4:4:4 chroma (x264 only) — razor-sharp coloured
+                                  // edges/text; bigger files, less player compatibility
+    int   quality     = 20;       // QP / CQ / CRF, 0-51 (lower = better)
     int   bitrateKbps = 12000;    // used for CBR and as ceiling for QVBR/CQVBR
     int   recFps      = 60;
     int   outWidth    = 0;        // 0 = match capture (no scale)
@@ -98,28 +123,29 @@ inline StudioState& studioState() {
 inline void applyPerfProfile(StudioState& st, PerfProfile p) {
     st.perfProfile  = p;
     st.videoEncoder = VideoEncoder::X264;
-    st.rateControl  = RateControl::CQP; // CQP is faster than VBR/CRF for x264
+    st.rateControl  = RateControl::CQP;
+    st.rateMode     = RateMode::Quality; // constant quality (CRF) — best for a recorder
     switch (p) {
-        // Potato  — 480p@24fps, very lossy.
+        // Potato  — 480p@30fps, fast encode, lossy. Prioritises game framerate.
         case PerfProfile::Potato:
-            st.previewFps = 10; st.recFps = 24; st.quality = 40;
-            st.outWidth = 854; st.outHeight = 480; st.bitrateKbps = 1500;
-            st.previewMaxDim = 480; break;
-        // Low  — 720p@30fps, lossy.
+            st.previewFps = 10; st.recFps = 30; st.quality = 28;
+            st.outWidth = 854; st.outHeight = 480; st.bitrateKbps = 2500;
+            st.previewMaxDim = 480; st.encodeMode = EncodeMode::MaxPerformance; break;
+        // Low  — 720p@60fps, fast encode. Smooth gameplay, modest quality.
         case PerfProfile::Low:
-            st.previewFps = 15; st.recFps = 30; st.quality = 35;
-            st.outWidth = 1280; st.outHeight = 720; st.bitrateKbps = 3000;
-            st.previewMaxDim = 640; break;
-        // Balanced  — 720p@60fps, the daily-driver baseline for YouTube-ready clips.
+            st.previewFps = 15; st.recFps = 60; st.quality = 24;
+            st.outWidth = 1280; st.outHeight = 720; st.bitrateKbps = 6000;
+            st.previewMaxDim = 640; st.encodeMode = EncodeMode::MaxPerformance; break;
+        // Balanced  — 1080p@60fps, balanced preset. Good picture, stable framerate.
         case PerfProfile::Balanced:
-            st.previewFps = 30; st.recFps = 60; st.quality = 23;
-            st.outWidth = 1280; st.outHeight = 720; st.bitrateKbps = 12000;
-            st.previewMaxDim = 960; break;
-        // Quality  — 720p@60fps, lower CRF for cleaner output when file size doesn't matter.
+            st.previewFps = 30; st.recFps = 60; st.quality = 21;
+            st.outWidth = 1920; st.outHeight = 1080; st.bitrateKbps = 16000;
+            st.previewMaxDim = 1280; st.encodeMode = EncodeMode::Balanced; break;
+        // Quality  — 1080p@60fps, slow high-quality preset, near-lossless picture.
         case PerfProfile::Quality:
-            st.previewFps = 30; st.recFps = 60; st.quality = 18;
-            st.outWidth = 1280; st.outHeight = 720; st.bitrateKbps = 20000;
-            st.previewMaxDim = 1280; break;
+            st.previewFps = 30; st.recFps = 60; st.quality = 17;
+            st.outWidth = 1920; st.outHeight = 1080; st.bitrateKbps = 40000;
+            st.previewMaxDim = 1280; st.encodeMode = EncodeMode::MaxQuality; break;
         case PerfProfile::Custom:
         default: break;
     }

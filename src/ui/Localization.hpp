@@ -105,6 +105,17 @@ struct Strings {
     const char* settings_borrow_fps_desc;
     const char* notify_recording_started;
     const char* notify_recording_hint;
+
+    // ---- encoder quality/performance + dual audio tracks ----
+    const char* recording_encode_mode;   // label
+    const char* encode_mode_items;        // combo: Max Performance\0Balanced\0Max Quality\0
+    const char* recording_rate_control;   // label
+    const char* rate_control_items;       // combo: Quality\0Bitrate\0
+    const char* recording_bitrate;        // label (kbps)
+    const char* audio_tracks;             // label
+    const char* audio_tracks_items;       // combo: Single\0Dual\0
+    const char* recording_full_range;     // checkbox: full-range colour
+    const char* recording_chroma444;      // checkbox: 4:4:4 chroma
 };
 
 int count();

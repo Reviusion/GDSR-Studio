@@ -11,15 +11,18 @@ No OBS. No stream keys. No Game Capture wizard nonsense. Just hit F8 and you've 
 ## What it does
 
 - **Live preview** — see exactly what's being recorded, right in the studio panel
-- **Video recording** — H.264 or MJPEG, software x264 or hardware NVENC/AMF/QSV
+- **Video recording** — H.264 via software x264 or hardware NVENC / AMF / QSV
+- **Encode modes** — Max Performance / Balanced / Max Quality, per codec. Each one maps to the encoder's real presets (NVENC p1→p7, x264 superfast→medium, AMF/QSV speed→quality) instead of leaving everything on a streaming "low-latency" preset
+- **Quality controls** — constant-quality (CRF/CQ) or constant-bitrate, full color range to keep GD's vivid colors, optional 4:4:4 chroma (x264) for razor-sharp colored edges and text
 - **Audio capture** — system audio + microphone via WASAPI loopback, mixed to AAC
+- **Dual audio tracks** — record one mixed track, or two: full mix + a separate mic-only track you can re-balance or drop in your editor
 - **Audio mixer** — separate channels for desktop and mic, with gain, mute, and peak meters
-- **Performance presets** — Potato / Low / Balanced / Quality
+- **Performance presets** — Potato / Low / Balanced / Quality, from 480p to 1080p
 - **Zero render-thread overhead** — frame capture runs on a dedicated thread via D3D11 staging textures, so the game doesn't stutter
 - **Borrow FPS** — when the encoder falls behind, the game itself slows down just enough so every recorded frame is a real frame (no dropped/duplicated frames). Essential on weaker machines.
 - **15 languages** — English, Русский, Español, Português, Deutsch, 简体中文, Français, 日本語, 한국어, Italiano, Polski, Türkçe, Tiếng Việt, Bahasa Indonesia, Українська
 - **Dark/light theme**, dockable panels, F11 for fullscreen
-- **Recommended: 720p at 60 fps** — the sweet spot for YouTube-ready recordings without hammering your GPU
+- **Recommended: 720p60 (Low/Balanced)** for clean YouTube clips without hammering your GPU — push to 1080p60 (Quality) if your hardware can take it
 
 ---
 

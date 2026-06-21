@@ -281,8 +281,16 @@ void ImGuiManager::loadSettings() {
     st.language   = mod->getSavedValue<int>("language", 0);
     st.fontFamily = mod->getSavedValue<int>("font-family", 0);
     st.fontSize   = (float)mod->getSavedValue<double>("font-size", 16.0);
-    st.videoEncoder = static_cast<VideoEncoder>(mod->getSavedValue<int>("video-encoder", (int)VideoEncoder::X264));
+    {
+        int ve = mod->getSavedValue<int>("video-encoder", (int)VideoEncoder::X264);
+        if (ve < 0 || ve > (int)VideoEncoder::QSV) ve = (int)VideoEncoder::X264; // drop removed MJPEG
+        st.videoEncoder = static_cast<VideoEncoder>(ve);
+    }
     st.rateControl  = static_cast<RateControl>(mod->getSavedValue<int>("rate-control", (int)RateControl::CQP));
+    st.encodeMode   = static_cast<EncodeMode>(mod->getSavedValue<int>("encode-mode", (int)EncodeMode::MaxQuality));
+    st.rateMode     = static_cast<RateMode>(mod->getSavedValue<int>("rate-mode", (int)RateMode::Quality));
+    st.fullColorRange = mod->getSavedValue<bool>("full-color-range", false);
+    st.highChroma444  = mod->getSavedValue<bool>("high-chroma-444", false);
     st.perfProfile  = static_cast<PerfProfile>(mod->getSavedValue<int>("perf-profile", (int)PerfProfile::Balanced));
     st.previewFps    = mod->getSavedValue<int>("preview-fps", 30);
     st.previewMaxDim = mod->getSavedValue<int>("preview-maxdim", 1280);
@@ -303,6 +311,7 @@ void ImGuiManager::loadSettings() {
     st.audioDesktopVol     = std::clamp((float)mod->getSavedValue<double>("audio-desktop-vol", 1.0), 0.0f, 3.0f);
     st.audioMicVol         = std::clamp((float)mod->getSavedValue<double>("audio-mic-vol", 1.0), 0.0f, 3.0f);
     st.audioBitrateKbps    = mod->getSavedValue<int>("audio-bitrate", 192);
+    st.audioTrackMode      = static_cast<AudioTrackMode>(mod->getSavedValue<int>("audio-track-mode", (int)AudioTrackMode::Single));
     st.desktopDeviceId     = mod->getSavedValue<std::string>("audio-desktop-id", "");
     st.micDeviceId         = mod->getSavedValue<std::string>("audio-mic-id", "");
     if (st.perfProfile != PerfProfile::Custom) applyPerfProfile(st, st.perfProfile);
@@ -317,6 +326,10 @@ void ImGuiManager::saveSettings() {
     mod->setSavedValue<double>("font-size", (double)st.fontSize);
     mod->setSavedValue<int>("video-encoder", (int)st.videoEncoder);
     mod->setSavedValue<int>("rate-control", (int)st.rateControl);
+    mod->setSavedValue<int>("encode-mode", (int)st.encodeMode);
+    mod->setSavedValue<int>("rate-mode", (int)st.rateMode);
+    mod->setSavedValue<bool>("full-color-range", st.fullColorRange);
+    mod->setSavedValue<bool>("high-chroma-444", st.highChroma444);
     mod->setSavedValue<int>("perf-profile", (int)st.perfProfile);
     mod->setSavedValue<int>("preview-fps", st.previewFps);
     mod->setSavedValue<int>("preview-maxdim", st.previewMaxDim);
@@ -337,6 +350,7 @@ void ImGuiManager::saveSettings() {
     mod->setSavedValue<double>("audio-desktop-vol", (double)st.audioDesktopVol);
     mod->setSavedValue<double>("audio-mic-vol", (double)st.audioMicVol);
     mod->setSavedValue<int>("audio-bitrate", st.audioBitrateKbps);
+    mod->setSavedValue<int>("audio-track-mode", (int)st.audioTrackMode);
     mod->setSavedValue<std::string>("audio-desktop-id", st.desktopDeviceId);
     mod->setSavedValue<std::string>("audio-mic-id", st.micDeviceId);
     st.savePending = false;
