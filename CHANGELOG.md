@@ -31,7 +31,7 @@ work that made things jittery.
 ### Install
 
 Download `reviusion.gdsr-studio.geode` below and drop it in
-`%LOCALAPPDATA%\GeometryDash\geode\mods\`, or just install it from the Geode in-game
+`%LOCALAPPDATA%\GeometryDash\geode\mods\`
 mod browser. Press **F8** in-game to open the studio.
 
 Needs Geode for Geometry Dash 2.2081 on Windows.
